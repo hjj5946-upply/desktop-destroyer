@@ -1,5 +1,6 @@
 import type { DestroyEngine } from '../engine';
 import { CRACK_STYLE, createCrack } from '../crack';
+import { CELL } from '../grid';
 import { burst, halfPlane, makeCanvas, particle, pick, polyPath, rand, RegionShift, TAU, zigzag, type Pt, type Weapon } from './util';
 
 // ───────────── 8. 지진: 화면이 흔들리며 큰 균열이 가로지르고 조각이 어긋난다 ─────────────
@@ -61,6 +62,8 @@ export class Quake implements Weapon {
       });
     }
 
+    e.grid.markPath(line, 1);
+    e.impact(x, y, 0.6);
     this.rumble = 1.4;
     e.shake = Math.max(e.shake, 45 * k);
     e.hits += 2;
@@ -171,6 +174,9 @@ export class Lightning implements Weapon {
       gravity: 1500,
       additive: true,
     });
+    e.grid.markCircle(x, y, 45 * k, 1, CELL.BURNING);
+    e.react('electric', x, y, 420 * k);
+    e.react('fire', x, y, 45 * k);
     e.flashes.push({ x, y, t: 0, dur: 0.25, r: 500 * k, color: '190,210,255' });
     e.shake = Math.max(e.shake, 15 * k);
     e.hits += 1;
@@ -309,6 +315,9 @@ export class MeteorShower implements Weapon {
     }
     e.addCrack(createCrack(x, y, Math.min(e.w, e.h) * 0.08 * m.size, k, { rays: 6, width: 2.5, rings: false, style: CRACK_STYLE.char }));
     e.heat.push({ x, y, r: cr * 0.9, life: 2.2, max: 2.2 });
+    e.grid.markCircle(x, y, cr * 1.6, 1, CELL.BURNING);
+    e.react('fire', x, y, cr * 1.6);
+    e.react('blast', x, y, cr * 2.5);
 
     for (let i = 0; i < 30; i++) {
       const a = Math.random() * TAU;
@@ -474,6 +483,7 @@ export class BlackHole implements Weapon {
         if (sp.r < 8 * k) h.spin.splice(n, 1);
       }
 
+      e.grid.markCircle(h.x, h.y, h.R * 0.6, dt * 0.6 * s);
       e.pullRoaches(h.x, h.y, h.R, dt * s);
       e.shake = Math.max(e.shake, 3 * k * s);
       e.hits = Math.max(e.hits, 1);
@@ -641,6 +651,7 @@ export class Gravity implements Weapon {
       b.stroke(pc.path);
     }
     if (this.pieces.length > 200) this.pieces.splice(0, this.pieces.length - 200);
+    e.grid.markCircle(x, y, R, 1);
     e.shake = Math.max(e.shake, 8 * k);
     e.hits += 1;
     e.hitRoaches(x, y, R, false, 400 * k);
@@ -768,6 +779,7 @@ export class Bugs implements Weapon {
       d.beginPath();
       d.arc(hx + rand(-0.8, 0.8) * k, hy + rand(-0.8, 0.8) * k, rand(2, 3.2) * k, 0, TAU);
       d.fill();
+      e.grid.markCircle(hx, hy, 0, dt * 0.4);
       if (Math.random() < dt * 4) {
         e.addParticle(
           particle({ x: hx, y: hy, vx: rand(-40, 40) * k, vy: rand(-60, 0) * k, life: 0.5, size: 1.5 * k, color: '140,120,90', gravity: 900 * k, square: true }),

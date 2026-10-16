@@ -1,6 +1,20 @@
 import { CRACK_STYLE, createCrack, strokeSegs, type Crack } from './crack';
 import { Sfx } from './audio';
-import type { Particle, RegionShift, Weapon } from './weapons/util';
+import { CELL, DamageGrid } from './grid';
+import { ComboScore, REACTION_POINTS } from './combo';
+import { REACTIONS, type Element, type Reaction } from './reactions';
+import { THEMES } from './theme';
+import { SystemCollapse } from './collapse';
+import { DevLog } from './devlog';
+import { RewindEnding, ShatterEnding } from './ending';
+
+/** 되감기 연출용 균열 기록 최대 개수 */
+const CRACK_LOG_MAX = 200;
+/** 100% 도달 후 엔딩 시작까지 (실제 시간, 마지막 한 방 슬로모션 길이와 맞춤) */
+const ENDING_DELAY = 1.6;
+/** 진짜 바탕화면 엔딩에서 조각이 다 떨어진 뒤 종료까지 (초) */
+const REVEAL_END_HOLD = 2.2;
+import type { Particle, RegionShift, ResourceInfo, Weapon } from './weapons/util';
 import { Acid, Drill, Freeze, Laser, Magnifier, Paint } from './weapons/tools';
 import { BlackHole, Bugs, Gravity, Lightning, MeteorShower, Quake } from './weapons/disasters';
 
@@ -47,6 +61,12 @@ const GUN_SPEC: Record<GunId, { mag: number; reload: number; interval: number }>
   gun: { mag: 8, reload: 1.3, interval: 0.07 },
   m4: { mag: 30, reload: 2.0, interval: 0.085 }, // 약 700발/분
 };
+
+/**
+ * 화염방사기 연료 (아직 꺼둠: 지금은 무제한).
+ * 켤 때: flameTick에서 fuel -= dt, 0이면 분사 중지 / 안 쏠 때 refill초에 걸쳐 회복 / resourceInfo('flame')에서 kind: 'fuel'로 반환
+ */
+// const FLAME_FUEL = { max: 6, refill: 2.5 };
 
 interface GunState {
   ammo: number;
@@ -241,8 +261,21 @@ export class DestroyEngine {
   private particles: Particle[] = [];
   /** 화면 조각 이동 애니메이션 (한 번에 하나씩 차례로) */
   private shifts: RegionShift[] = [];
-  private readonly freeze: Freeze;
+  /** 냉동총 (조합 규칙에서 얼음을 깨거나 녹이려고 public) */
+  readonly freeze: Freeze;
   private readonly bugs: Bugs;
+  private readonly nuke: Nuke;
+  /** 유리 조각 낙하 엔딩 (100% / 핵폭탄). 시작은 startShatter로 */
+  private readonly shatter: ShatterEnding;
+  /** 창이 투명 + 클릭 통과로 바뀌어 진짜 바탕화면 위에 조각만 그리는 중 */
+  private revealing = false;
+  private revealDone = false;
+  /** 되감기 연출 (Space / 시간 되감기 무기) */
+  private readonly rewindFx: RewindEnding;
+  /** 굳은 균열 기록 (되감기 연출용, 최근 CRACK_LOG_MAX개) */
+  crackLog: Crack[] = [];
+  /** 100% 도달 후 유리 조각 엔딩까지 남은 시간 (실제 시간, 0이면 대기 없음) */
+  private endingIn = 0;
   /** 벌레 풀기가 해금되면 바퀴벌레가 더 많이, 더 자주 나온다 (App이 설정) */
   bugsUnlocked = false;
   private popups: Popup[] = [];
@@ -268,7 +301,39 @@ export class DestroyEngine {
   onFire?: () => void;
   /** 탄약/재장전 상태가 바뀔 때마다 (HUD 갱신용) */
   onAmmo?: () => void;
+  /** SCORE / 콤보 / 파괴율이 바뀐 프레임마다 (HUD 갱신용) */
+  onStats?: (s: { score: number; combo: number; percent: number }) => void;
+  /** 파괴율 100% 도달 (격자가 초기화되기 전까지 한 번만) */
+  onComplete?: () => void;
+  /** 유리 조각 엔딩 시작 시: 창을 투명 + 클릭 통과로 바꿔달라는 요청. 성공하면 true (없거나 실패면 스크린샷 엔딩) */
+  onReveal?: () => Promise<boolean>;
+  /** 진짜 바탕화면 엔딩이 끝남 → App이 종료 */
+  onRevealDone?: () => void;
   hits = 0;
+
+  /** 격자 상태 맵 (파괴율 / 조합 판정 / 엔딩 조건) */
+  readonly grid: DamageGrid;
+  /** 콤보 + SCORE (해금용 누적 점수 onScore와는 별개) */
+  readonly combo = new ComboScore();
+  /** 100% 알림을 이미 보냈는지 */
+  private completed = false;
+  private lastStats = { score: -1, combo: -1, percent: -1 };
+
+  /** 화면 뒤 세계 테마 (T키) */
+  private themeIdx = 0;
+  /** 파괴율이 높을수록 노이즈/경고 */
+  private readonly collapse = new SystemCollapse();
+  /** 개발자 유머 로그 (L키) */
+  readonly log = new DevLog();
+  /** 게임 시간 배율 (1 = 정상, 작을수록 느림). 슬로모션이 바꾼다 */
+  timeScale = 1;
+  /** 슬로모션: 배율 / 전체 시간 / 남은 시간 (실제 시간 기준) */
+  private slow = { scale: 1, dur: 0, left: 0 };
+  /** 충격 줌: 중심 / 최대 확대량 / 경과 / 전체 시간 (실제 시간 기준) */
+  private punch = { x: 0, y: 0, amount: 0, t: 0, dur: 0 };
+  /** 조합 규칙별 마지막 점수/로그 시각 (게임 시간). 매 프레임 반응해도 점수가 폭주하지 않게 */
+  private reactAt = new Map<string, number>();
+  private gameClock = 0;
 
   private running = false;
   private raf = 0;
@@ -310,9 +375,13 @@ export class DestroyEngine {
     const dctx = this.damage.getContext('2d');
     if (!dctx) throw new Error('Canvas 2D(damage)를 사용할 수 없습니다');
     this.dctx = dctx;
+    this.grid = new DamageGrid(this.w, this.h, this.k);
 
     this.freeze = new Freeze(this);
     this.bugs = new Bugs(this);
+    this.nuke = new Nuke(this);
+    this.shatter = new ShatterEnding(this);
+    this.rewindFx = new RewindEnding(this);
     this.weapons = {
       drill: new Drill(this),
       laser: new Laser(this),
@@ -332,7 +401,7 @@ export class DestroyEngine {
       sticker: new Sticker(this),
       rewind: new Rewind(this),
       tsunami: new Tsunami(this),
-      nuke: new Nuke(this),
+      nuke: this.nuke,
     };
   }
 
@@ -353,14 +422,152 @@ export class DestroyEngine {
     cancelAnimationFrame(this.raf);
   }
 
-  /** 모든 파괴 흔적을 지우고 원래 화면으로 되돌린다 (촬영 재시도용) */
-  reset() {
+  /**
+   * 모든 파괴 흔적을 지우고 원래 화면으로 되돌린다 (촬영 재시도용)
+   * @param keepScore true면 SCORE/콤보는 유지 (시간 되감기 무기가 화면만 되돌릴 때)
+   */
+  reset(keepScore = false) {
+    // 투명 + 클릭 통과 엔딩 중에는 되돌릴 수 없다 (곧 자동 종료)
+    if (this.revealing) return;
     this.clearAll();
     for (const wpn of Object.values(this.weapons)) wpn?.reset?.();
+    if (!keepScore) this.combo.reset();
+    this.log.reset();
+    this.slow.left = 0;
+    this.timeScale = 1;
+    this.punch.dur = 0;
+    this.endingIn = 0;
+    this.shatter.reset();
+    this.rewindFx.reset();
+    this.emitStats();
   }
 
-  /** 화면 흔적만 지운다 (무기 상태는 유지: 핵폭탄 엔딩에서 사용) */
+  /**
+   * 되감기 연출 시작 (Space / 시간 되감기 무기). 끝나면 reset(keepScore)
+   * @returns 시작했으면 true (이미 되감는 중이면 false)
+   */
+  rewind(keepScore = false) {
+    if (this.revealing) return false;
+    this.release();
+    return this.rewindFx.start(keepScore);
+  }
+
+  /** 유리 조각 엔딩 시작 (100% / 핵폭탄) + 진짜 바탕화면 전환 요청 */
+  startShatter(x: number, y: number) {
+    if (!this.shatter.start(x, y)) return;
+    // 조각은 최소 0.3초 기다렸다 떨어지므로, 그 사이 전환이 끝나면 떨어지는 순간부터 바탕화면이 비친다
+    this.onReveal?.().then((ok) => {
+      if (ok && this.shatter.active) this.revealing = true;
+    });
+  }
+
+  /**
+   * 조합 반응 판정 (reactions.ts 규칙표). 무기가 속성 공격을 할 때 부른다
+   * @returns 반응이 하나라도 일어났으면 true
+   */
+  react(el: Element, x: number, y: number, r: number) {
+    let any = false;
+    for (const rule of REACTIONS) {
+      if (rule.enabled === false || rule.by !== el) continue;
+      const cells = this.grid.cellsWith(x, y, r, rule.on);
+      if (cells.length === 0) continue;
+      if (!rule.run(this, { x, y, r, cells })) continue;
+      any = true;
+      this.reacted(rule);
+    }
+    return any;
+  }
+
+  /** 반응 보상: SCORE 보너스 + 로그 (규칙마다 0.5초에 한 번) */
+  private reacted(rule: Reaction) {
+    const last = this.reactAt.get(rule.id) ?? -Infinity;
+    if (this.gameClock - last < 0.5) return;
+    this.reactAt.set(rule.id, this.gameClock);
+    this.combo.bonus(REACTION_POINTS);
+    this.log.note('INFO', `COMBO! ${rule.log}`);
+  }
+
+  /** 연쇄 폭발: 범위 안 폭탄의 도화선을 거리에 따라 곧바로 태운다. 불붙인 폭탄 수 */
+  chainBombs(x: number, y: number, r: number) {
+    let n = 0;
+    for (const b of this.bombs) {
+      const d = Math.hypot(b.x - x, b.y - y);
+      if (d > r) continue;
+      const at = b.t + 0.08 + (d / r) * 0.25;
+      if (at < b.fuse) {
+        b.fuse = at;
+        n++;
+      }
+    }
+    return n;
+  }
+
+  /** 다음 테마로 바꾸고 이름을 돌려준다 */
+  cycleTheme() {
+    this.themeIdx = (this.themeIdx + 1) % THEMES.length;
+    return THEMES[this.themeIdx].label;
+  }
+
+  /**
+   * 큰 타격 연출: 슬로모션 + 충격 지점 줌
+   * @param power 0~1 (폭탄 0.5, 핵폭탄 1)
+   */
+  impact(x: number, y: number, power: number) {
+    this.slowMo(0.45 - 0.25 * power, 0.35 + 0.9 * power);
+    this.zoomPunch(x, y, 0.05 + 0.12 * power, 0.45 + 0.5 * power);
+  }
+
+  /** 잠깐 느려졌다가 돌아온다. 이미 더 강한 슬로모션 중이면 무시 */
+  slowMo(scale: number, dur: number) {
+    if (this.slow.left > 0 && this.slow.scale <= scale && this.slow.left >= dur) return;
+    this.slow = { scale, dur, left: dur };
+  }
+
+  /** 충격 지점으로 확대됐다 돌아온다. 이미 더 큰 줌 중이면 무시 */
+  zoomPunch(x: number, y: number, amount: number, dur: number) {
+    const p = this.punch;
+    if (p.t < p.dur && p.amount > amount) return;
+    this.punch = { x, y, amount, t: 0, dur };
+  }
+
+  /** 슬로모션/줌/붕괴 연출 시간 진행 (실제 시간) */
+  private updateRealtime(dt: number) {
+    const s = this.slow;
+    if (s.left > 0) {
+      s.left = Math.max(0, s.left - dt);
+      const p = 1 - s.left / s.dur;
+      // 앞 60%는 느린 채로, 뒤 40%에 걸쳐 원래 속도로
+      this.timeScale = p < 0.6 ? s.scale : s.scale + (1 - s.scale) * ((p - 0.6) / 0.4);
+    } else {
+      this.timeScale = 1;
+    }
+    if (this.punch.t < this.punch.dur) this.punch.t += dt;
+    if (this.endingIn > 0) {
+      this.endingIn -= dt;
+      if (this.endingIn <= 0) {
+        this.endingIn = 0;
+        if (!this.nuke.busy && !this.shatter.active && !this.rewindFx.active) this.startShatter(this.aim.x, this.aim.y);
+      }
+    }
+    this.collapse.update(dt, this.grid.percent);
+    this.log.update(dt);
+  }
+
+  /** 지금 줌 배율 (1 = 줌 없음) */
+  private punchZoom() {
+    const p = this.punch;
+    if (p.t >= p.dur) return 1;
+    const q = p.t / p.dur;
+    // 0.12까지 빠르게 확대 → 천천히 복귀
+    const env = q < 0.12 ? 1 - (1 - q / 0.12) ** 2 : (1 - (q - 0.12) / 0.88) ** 2;
+    return 1 + p.amount * env;
+  }
+
+  /** 화면 흔적만 지운다 (무기 상태는 유지: 핵폭탄 엔딩에서 사용). 격자도 화면을 따라 비운다 */
   clearAll() {
+    this.grid.reset();
+    this.completed = false;
+    this.crackLog = [];
     this.dctx.clearRect(0, 0, this.w, this.h);
     this.bctx.drawImage(this.shot, 0, 0, this.w, this.h);
     this.particles = [];
@@ -387,13 +594,15 @@ export class DestroyEngine {
     if (!p) return;
     const { x, y } = p;
     this.release();
+    // 엔딩 연출 중에는 공격 안 받음 (Space / Shift+Space / ESC만)
+    if (this.shatter.active || this.rewindFx.active) return;
     this.trigger = { tool, x, y };
     this.aim = { x, y };
 
     switch (tool) {
       case 'hammer':
-        // 얼음을 치면 얼음 조각으로 깨진다
-        if (!this.freeze.shatterAt(x, y)) this.hammer(x, y);
+        // 조합 반응이 일어나면 (예: 얼음을 치면 얼음 조각) 기본 타격 대신
+        if (!this.react('smash', x, y, 0)) this.hammer(x, y);
         this.hitRoaches(x, y, 0);
         this.fired();
         break;
@@ -447,12 +656,15 @@ export class DestroyEngine {
     this.startReload(tool);
   }
 
-  /** HUD 표시용 탄약 정보 (총기가 아니면 null) */
-  ammoInfo(tool: ToolId) {
-    if (tool !== 'gun' && tool !== 'm4') return null;
-    const g = this.guns[tool];
-    const spec = GUN_SPEC[tool];
-    return { ammo: g.ammo, mag: spec.mag, reloading: g.reload > 0, reloadDur: spec.reload, reloadLeft: g.reload };
+  /** HUD 표시용 무기 자원 (탄약/연료). null이면 무제한 (망치 등) */
+  resourceInfo(tool: ToolId): ResourceInfo | null {
+    if (tool === 'gun' || tool === 'm4') {
+      const g = this.guns[tool];
+      const spec = GUN_SPEC[tool];
+      return { kind: 'ammo', cur: g.ammo, max: spec.mag, reloading: g.reload > 0, reloadDur: spec.reload, reloadLeft: g.reload };
+    }
+    // 화염방사기 연료는 FLAME_FUEL 주석 참고 (지금은 무제한)
+    return this.weapons[tool]?.resource?.() ?? null;
   }
 
   // ───────────── 무기 모듈용 헬퍼 ─────────────
@@ -555,10 +767,25 @@ export class DestroyEngine {
     this.roaches = [];
   }
 
-  /** 점수 1 + 커서 반동 */
-  private fired() {
+  /**
+   * 해금 점수 1 + 커서 반동 + 콤보
+   * @param held 연사 중 자동 발사면 true (콤보는 HOLD_STEP초에 한 번만)
+   */
+  private fired(held = false) {
     this.onScore?.(1);
     this.onFire?.();
+    if (held) this.combo.hitHeld();
+    else this.combo.hit();
+    this.log.hit(this.trigger?.tool ?? this.tool);
+  }
+
+  /** SCORE/콤보/파괴율이 바뀌었을 때만 App에 알린다 */
+  private emitStats() {
+    const s = { score: this.combo.score, combo: this.combo.combo, percent: Math.floor(this.grid.percent) };
+    const l = this.lastStats;
+    if (s.score === l.score && s.combo === l.combo && s.percent === l.percent) return;
+    this.lastStats = s;
+    this.onStats?.(s);
   }
 
   private toCanvas(clientX: number, clientY: number) {
@@ -602,6 +829,8 @@ export class DestroyEngine {
       this.dctx.closePath();
       this.dctx.fill();
     }
+
+    this.grid.markCircle(x, y, 40 * k, 1);
 
     // 순간 섬광 + 화면 흔들림 + 튀는 파편 + 소리
     this.flashes.push({ x, y, t: 0, dur: 0.14, r: 120 * k, color: '220,235,255' });
@@ -656,9 +885,10 @@ export class DestroyEngine {
     }
     this.hitRoaches(hx, hy, 0);
     this.ejectCasing(x, y);
+    this.grid.markCircle(hx, hy, 0, 0.5);
     if (tool === 'm4') this.sfx.rifle();
     else this.sfx.gunshot();
-    this.fired();
+    this.fired(!manual);
 
     if (g.ammo === 0) this.startReload(tool);
     this.onAmmo?.();
@@ -838,6 +1068,8 @@ export class DestroyEngine {
       if (this.heat.length > 150) this.heat.shift();
     }
 
+    this.grid.markCircle(x, y, 60 * k, dt * 1.2, CELL.BURNING);
+    this.react('fire', x, y, 60 * k);
     this.hits = Math.max(this.hits, 1);
     this.shake = Math.max(this.shake, 1.5 * k);
     this.hitRoaches(x, y, 55 * k, true);
@@ -878,6 +1110,7 @@ export class DestroyEngine {
   private placeBomb(x: number, y: number) {
     if (this.bombs.length >= 8) return false;
     this.bombs.push({ x, y, t: 0, fuse: 1.3 + Math.random() * 0.3 });
+    this.grid.markCircle(x, y, 0, 0, CELL.BOMB);
     this.sfx.bombPlace();
     return true;
   }
@@ -974,6 +1207,14 @@ export class DestroyEngine {
     this.flashes.push({ x, y, t: 0, dur: 0.3, r: 950 * k, color: '255,150,60' });
     this.shake = Math.max(this.shake, 38 * k);
     this.spawnShards(x, y, 22, true);
+    this.grid.markCircle(x, y, 150 * k, 1, CELL.BURNING);
+    this.grid.markCircle(x, y, 340 * k, 0.3);
+    // 이 폭탄 자리 표시를 지운 뒤 (같은 칸에 다른 폭탄이 있으면 다시 칠함) 주변 반응
+    this.grid.clearFlag(x, y, 0, CELL.BOMB);
+    for (const o of this.bombs) this.grid.markCircle(o.x, o.y, 0, 0, CELL.BOMB);
+    this.react('blast', x, y, 260 * k);
+    this.react('fire', x, y, 150 * k);
+    this.impact(x, y, 0.5);
     this.hits += 3;
     this.sfx.boom();
     this.hitRoaches(x, y, 260 * k, true, 700 * k);
@@ -1421,15 +1662,19 @@ export class DestroyEngine {
     if (!this.running) return;
     const dt = Math.min(0.05, (now - this.last) / 1000);
     this.last = now;
-    this.update(dt);
+    this.updateRealtime(dt);
+    this.update(dt * this.timeScale);
     this.draw();
     this.raf = requestAnimationFrame(this.frame);
   };
 
   private update(dt: number) {
     const k = this.k;
+    this.gameClock += dt;
+    this.combo.update(dt);
+    this.grid.update(dt);
 
-    // 균열 퍼지기: 끝까지 퍼진 균열은 영구 레이어에 굳힌다
+    // 균열 퍼지기: 끝까지 퍼진 균열은 영구 레이어에 굳히고 격자에 기록한다
     for (let i = this.active.length - 1; i >= 0; i--) {
       const c = this.active[i];
       c.t += dt;
@@ -1439,7 +1684,10 @@ export class DestroyEngine {
       while (c.n < c.segs.length && c.segs[c.n].sd <= front) c.n++;
       if (p >= 1) {
         c.n = c.segs.length;
-        strokeSegs(this.dctx, c.segs, c.n, k, c.style);
+        strokeSegs(this.dctx, c.segs, c.n, k, c.style, THEMES[this.themeIdx]);
+        this.grid.markSegs(c.segs);
+        this.crackLog.push(c);
+        if (this.crackLog.length > CRACK_LOG_MAX) this.crackLog.shift();
         this.active.splice(i, 1);
       }
     }
@@ -1482,6 +1730,15 @@ export class DestroyEngine {
     const t = this.trigger;
     if (t) this.weapons[t.tool]?.hold?.(t.x, t.y, dt);
     for (const wpn of Object.values(this.weapons)) wpn?.update?.(dt);
+    this.shatter.update(dt);
+    this.rewindFx.update(dt); // 끝나면 reset()을 부르므로 맨 마지막 쪽에서
+    // 진짜 바탕화면 엔딩: 글자를 잠깐 보여준 뒤 종료 (Rust 워치독 REVEAL_SECS가 최종 보험)
+    if (this.revealing && !this.revealDone && this.shatter.endedFor >= REVEAL_END_HOLD) {
+      this.revealDone = true;
+      this.onRevealDone?.();
+    }
+    // 누르고 있는 무기는 콤보를 HOLD_STEP초에 한 번만 올린다 (M4A1 연사는 shoot에서 처리)
+    if (t && (t.tool === 'flame' || this.weapons[t.tool]?.hold)) this.combo.hitHeld();
 
     // 화면 조각 이동 (차례로 하나씩)
     if (this.shifts.length > 0 && this.shifts[0].step(dt)) this.shifts.shift();
@@ -1593,10 +1850,35 @@ export class DestroyEngine {
     // 화면 흔들림 감쇠
     this.shake *= Math.exp(-dt * 18);
     if (this.shake < 0.3) this.shake = 0;
+
+    // 새로 부서진 셀 → SCORE, 파괴율 100% → 알림 (한 번만)
+    if (this.grid.fresh > 0) {
+      this.combo.addCells(this.grid.fresh);
+      this.grid.fresh = 0;
+    }
+    if (!this.completed && this.grid.percent >= 100) {
+      this.completed = true;
+      // 마지막 한 방: 길게 느려지며 조준점으로 확대
+      this.slowMo(0.2, 1.6);
+      this.zoomPunch(this.aim.x, this.aim.y, 0.15, 1.4);
+      // 슬로모션이 끝나면 유리 조각 엔딩 (핵폭탄은 자기 엔딩이 있으므로 제외)
+      if (!this.nuke.busy) this.endingIn = ENDING_DELAY;
+      this.onComplete?.();
+    }
+    this.emitStats();
   }
 
   private draw() {
     const { ctx, w, h, k } = this;
+
+    // 진짜 바탕화면 엔딩: 배경 없이 떨어지는 조각과 글자만 (투명한 곳으로 바탕화면이 보인다)
+    if (this.revealing) {
+      ctx.clearRect(0, 0, w, h);
+      this.shatter.drawTop(ctx, true);
+      this.out.clearRect(0, 0, w, h);
+      this.out.drawImage(this.scene, 0, 0);
+      return;
+    }
 
     ctx.save();
     ctx.fillStyle = '#000';
@@ -1611,7 +1893,7 @@ export class DestroyEngine {
 
     // 퍼지는 중인 균열
     for (const c of this.active) {
-      strokeSegs(ctx, c.segs, c.n, k, c.style);
+      strokeSegs(ctx, c.segs, c.n, k, c.style, THEMES[this.themeIdx]);
     }
 
     // 달궈진 자리 (주황빛 → 식으며 사라짐)
@@ -1765,6 +2047,9 @@ export class DestroyEngine {
     }
 
     for (const wpn of Object.values(this.weapons)) wpn?.drawTop?.(ctx);
+    // 엔딩 연출은 무기보다 위 (되감기가 맨 위: 엔딩 화면에서 Space로 되감을 수 있게)
+    this.shatter.drawTop(ctx);
+    this.rewindFx.drawTop(ctx);
 
     // 점수 팝업
     ctx.save();
@@ -1785,8 +2070,23 @@ export class DestroyEngine {
       if (!presented && wpn?.present?.(this.out, this.scene)) presented = true;
     }
     if (!presented) {
-      this.out.drawImage(this.scene, 0, 0);
+      const z = this.scope ? 1 : this.punchZoom();
+      if (z > 1) {
+        // 충격 지점 기준 확대 (1 이상이라 가장자리가 비지 않는다)
+        const o = this.out;
+        o.save();
+        o.translate(this.punch.x, this.punch.y);
+        o.scale(z, z);
+        o.translate(-this.punch.x, -this.punch.y);
+        o.drawImage(this.scene, 0, 0);
+        o.restore();
+      } else {
+        this.out.drawImage(this.scene, 0, 0);
+      }
       if (this.scope) this.drawScope();
+      // 붕괴 연출 / 로그는 줌·흔들림 없이 맨 위에
+      this.collapse.draw(this.out, w, h, k);
+      this.log.draw(this.out, h, k);
     }
   }
 

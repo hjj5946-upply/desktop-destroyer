@@ -51,6 +51,9 @@ export interface Crack {
   dur: number;
   /** 지금까지 그려도 되는 선분 개수 */
   n: number;
+  /** 충격 중심 (되감기 엔딩에서 균열이 이쪽으로 줄어든다) */
+  cx: number;
+  cy: number;
 }
 
 interface Pt {
@@ -135,11 +138,19 @@ export function createCrack(
 
   segs.sort((a, b) => a.sd - b.sd);
   const maxSd = segs.length > 0 ? segs[segs.length - 1].sd : 0;
-  return { style: opts.style ?? CRACK_STYLE.glass, segs, maxSd, t: 0, dur: 0.22, n: 0 };
+  return { style: opts.style ?? CRACK_STYLE.glass, segs, maxSd, t: 0, dur: 0.22, n: 0, cx, cy };
 }
 
-/** 선분들을 최대 3겹으로 그린다 (그림자 → 바깥 선 → 속선) */
-export function strokeSegs(ctx: CanvasRenderingContext2D, segs: Seg[], count: number, k: number, style: CrackStyle) {
+/** 화면 뒤 세계 테마가 균열에 입히는 색 (theme.ts) */
+export interface CrackTint {
+  /** 틈 주변 글로우 "r,g,b" (null이면 없음) */
+  glow: string | null;
+  /** 속선 색 (null이면 무기 기본색) */
+  core: string | null;
+}
+
+/** 선분들을 최대 3겹으로 그린다 (테마 글로우 → 그림자 → 바깥 선 → 속선) */
+export function strokeSegs(ctx: CanvasRenderingContext2D, segs: Seg[], count: number, k: number, style: CrackStyle, tint?: CrackTint) {
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
 
@@ -155,7 +166,12 @@ export function strokeSegs(ctx: CanvasRenderingContext2D, segs: Seg[], count: nu
     }
   };
 
+  if (tint?.glow) {
+    pass(`rgba(${tint.glow},0.1)`, 12, 1, 0, 0);
+    pass(`rgba(${tint.glow},0.28)`, 5, 1, 0, 0);
+  }
   if (style.shadow) pass(style.shadow, 2, 1, 1, 1);
   pass(style.main, 0, 1, 0, 0);
-  if (style.core) pass(style.core, 0, style.coreScale, 0, 0);
+  const core = tint?.core ?? style.core;
+  if (core) pass(core, 0, style.coreScale || 0.4, 0, 0);
 }

@@ -10,6 +10,19 @@ body,
   user-select: none;
 }
 
+/* 엔딩(진짜 바탕화면 노출): 배경을 투명하게, 커서/HUD/인벤토리는 숨김 */
+html.reveal,
+html.reveal body,
+html.reveal #root {
+  background: transparent;
+}
+
+html.reveal .cursor,
+html.reveal .hud,
+html.reveal .inventory {
+  display: none;
+}
+
 .stage {
   position: fixed;
   inset: 0;
@@ -462,5 +475,120 @@ body,
 @keyframes blink {
   50% {
     opacity: 0.55;
+  }
+}
+
+/* ───── 연료 (화염방사기 등, 아직 미사용) ───── */
+.fuel {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  font-size: 11px;
+}
+
+.fuel-bar {
+  width: 140px;
+  height: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+}
+
+.fuel-bar div {
+  height: 100%;
+  background: #f2f4f7;
+  box-shadow: 0 0 6px rgba(255, 255, 255, 0.6);
+  transform-origin: 0 0;
+}
+
+.fuel-bar.low div {
+  background: #ff5a4f;
+}
+
+/* ───── SCORE / 파괴율 / 콤보 ───── */
+.hud-score {
+  top: 24px;
+  right: 28px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  min-width: 200px;
+  padding: 10px 14px;
+  background: rgba(4, 4, 6, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  backdrop-filter: blur(4px);
+}
+
+.score-label {
+  font-size: 10px;
+  opacity: 0.6;
+}
+
+.score-value {
+  font-size: 28px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.destroy {
+  width: 100%;
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 10px;
+}
+
+.destroy-head {
+  display: flex;
+  justify-content: space-between;
+}
+
+.destroy-head span {
+  opacity: 0.6;
+}
+
+.destroy-head b {
+  font-size: 12px;
+}
+
+.destroy-bar {
+  height: 5px;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.destroy-bar div {
+  height: 100%;
+  background: #f2f4f7;
+  box-shadow: 0 0 6px rgba(255, 255, 255, 0.6);
+  transform-origin: 0 0;
+  transition: transform 0.25s ease-out;
+}
+
+.destroy-bar.full div {
+  background: #ff5a4f;
+  box-shadow: 0 0 8px rgba(255, 60, 50, 0.8);
+}
+
+.combo {
+  margin-top: 6px;
+  font-size: 13px;
+  letter-spacing: 0.16em;
+  transform-origin: right center;
+  animation: combo-bump 180ms ease-out;
+}
+
+.combo b {
+  font-size: 22px;
+}
+
+@keyframes combo-bump {
+  from {
+    transform: scale(1.35);
+    opacity: 0.6;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
   }
 }

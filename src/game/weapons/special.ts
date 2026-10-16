@@ -1,7 +1,6 @@
 import type { DestroyEngine } from '../engine';
 import { CRACK_STYLE, createCrack } from '../crack';
-import { cutPiece } from './disasters';
-import { makeCanvas, rand, TAU, type Pt, type Weapon } from './util';
+import { makeCanvas, rand, TAU, type Weapon } from './util';
 
 // ───────────── 13. 글리치 바이러스: 화면 줄이 어긋나고 RGB 색이 갈라진다 ─────────────
 
@@ -21,6 +20,7 @@ export class Glitch implements Weapon {
 
   press(x: number, y: number) {
     this.e.flatten();
+    this.e.grid.markCircle(x, y, 200 * this.e.k, 0.4);
     this.bursts.push({ x, y, t: 0, dur: 1.4, tick: 0 });
     this.e.sfx.glitch();
     return true;
@@ -232,7 +232,8 @@ export class Crt implements Weapon {
 
 // ───────────── 20. 핵폭탄(필살기): 충전 → 섬광 → 충격파 → 버섯구름 → 초토화 → 엔딩 ─────────────
 
-type NukePhase = 'idle' | 'charge' | 'blast' | 'ending' | 'end';
+/** end = 유리 조각 엔딩으로 넘긴 뒤 (초기화 전까지 대기) */
+type NukePhase = 'idle' | 'charge' | 'blast' | 'end';
 
 interface Puff {
   x: number;
@@ -247,21 +248,6 @@ interface Puff {
   ang: number;
 }
 
-interface Falling {
-  cv: HTMLCanvasElement;
-  ox: number;
-  oy: number;
-  cx: number;
-  cy: number;
-  dx: number;
-  dy: number;
-  vx: number;
-  vy: number;
-  rot: number;
-  vr: number;
-  wait: number;
-}
-
 const CHARGE = 3.2;
 
 export class Nuke implements Weapon {
@@ -270,10 +256,14 @@ export class Nuke implements Weapon {
   private x = 0;
   private y = 0;
   private puffs: Puff[] = [];
-  private pieces: Falling[] = [];
   private beep = 0;
 
   constructor(private readonly e: DestroyEngine) {}
+
+  /** 충전~엔딩 진행 중 (100% 엔딩이 끼어들지 않게) */
+  get busy() {
+    return this.phase !== 'idle';
+  }
 
   press(x: number, y: number) {
     if (this.phase !== 'idle') return false;
@@ -316,64 +306,21 @@ export class Nuke implements Weapon {
     e.blasts.push({ x, y, t: 0, dur: 1.2, r: 900 * k });
     e.rings.push({ x, y, t: 0, dur: 0.9, r: far * 1.2 });
     e.rings.push({ x, y, t: 0, dur: 1.6, r: far * 0.8 });
+    e.grid.markAll();
+    e.react('blast', x, y, far);
+    e.impact(x, y, 1);
     e.shake = 80 * k;
     e.hits += 10;
     e.killAllRoaches();
     e.sfx.nukeBoom();
   }
 
+  /** 공용 유리 조각 엔딩으로 넘긴다 (ending.ts). 핵폭탄은 Space/Shift+Space 전까지 다시 못 씀 */
   private startEnding() {
-    const e = this.e;
-    const k = e.k;
-    this.phase = 'ending';
+    this.phase = 'end';
     this.t = 0;
-    // 지금 화면(초토화된 모습)을 유리 조각으로 잘라두고, 밑은 깨끗한 원래 화면으로 되돌린다
-    const { c: snap, ctx } = makeCanvas(e.w, e.h);
-    ctx.drawImage(e.scene, 0, 0);
-    e.clearAll();
     this.puffs = [];
-    const cols = 9;
-    const rows = 6;
-    const grid: Pt[][] = [];
-    for (let r = 0; r <= rows; r++) {
-      const row: Pt[] = [];
-      for (let c = 0; c <= cols; c++) {
-        const edge = r === 0 || c === 0 || r === rows || c === cols;
-        row.push({
-          x: (c / cols) * e.w + (edge ? 0 : rand(-0.3, 0.3) * (e.w / cols)),
-          y: (r / rows) * e.h + (edge ? 0 : rand(-0.3, 0.3) * (e.h / rows)),
-        });
-      }
-      grid.push(row);
-    }
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
-        const a = grid[r][c];
-        const b = grid[r][c + 1];
-        const cc = grid[r + 1][c + 1];
-        const dd = grid[r + 1][c];
-        // 사각형을 대각선으로 나눠 삼각형 조각 2개
-        for (const poly of Math.random() < 0.5 ? [[a, b, cc], [a, cc, dd]] : [[a, b, dd], [b, cc, dd]]) {
-          const pc = cutPiece(snap, poly);
-          const fromCenter = Math.hypot(pc.ox + pc.cx - this.x, pc.oy + pc.cy - this.y) / Math.hypot(e.w, e.h);
-          this.pieces.push({
-            cv: pc.cv,
-            ox: pc.ox,
-            oy: pc.oy,
-            cx: pc.cx,
-            cy: pc.cy,
-            dx: 0,
-            dy: 0,
-            vx: rand(-80, 80) * k,
-            vy: rand(-100, 0) * k,
-            rot: 0,
-            vr: rand(-2.5, 2.5),
-            wait: 0.3 + fromCenter * 1.6 + rand(0, 0.4), // 폭심부터 무너짐
-          });
-        }
-      }
-    }
-    e.sfx.shatterCascade();
+    this.e.startShatter(this.x, this.y);
   }
 
   update(dt: number) {
@@ -450,26 +397,6 @@ export class Nuke implements Weapon {
       }
       if (this.puffs.length > 700) this.puffs.splice(0, this.puffs.length - 700);
       if (this.t >= 6.5) this.startEnding();
-      return;
-    }
-
-    if (this.phase === 'ending') {
-      for (let i = this.pieces.length - 1; i >= 0; i--) {
-        const p = this.pieces[i];
-        if (p.wait > 0) {
-          p.wait -= dt;
-          continue;
-        }
-        p.vy += 2000 * k * dt;
-        p.dx += p.vx * dt;
-        p.dy += p.vy * dt;
-        p.rot += p.vr * dt;
-        if (p.oy + p.dy > e.h + 400 * k) this.pieces.splice(i, 1);
-      }
-      if (this.pieces.length === 0) {
-        this.phase = 'end';
-        this.t = 0;
-      }
     }
   }
 
@@ -556,39 +483,12 @@ export class Nuke implements Weapon {
       }
       return;
     }
-
-    if (this.phase === 'ending') {
-      for (const p of this.pieces) {
-        ctx.save();
-        ctx.translate(p.ox + p.dx + p.cx, p.oy + p.dy + p.cy);
-        ctx.rotate(p.rot);
-        ctx.drawImage(p.cv, -p.cx, -p.cy);
-        ctx.restore();
-      }
-      return;
-    }
-
-    if (this.phase === 'end') {
-      const a = Math.min(1, this.t / 1.2);
-      ctx.fillStyle = `rgba(0,0,0,${0.55 * a})`;
-      ctx.fillRect(0, 0, w, h);
-      ctx.textAlign = 'center';
-      ctx.shadowColor = 'rgba(255,255,255,0.8)';
-      ctx.shadowBlur = 18 * k;
-      ctx.fillStyle = `rgba(242,244,247,${a})`;
-      ctx.font = `bold ${56 * k}px Consolas, monospace`;
-      ctx.fillText('DESKTOP DESTROYED', w / 2, h / 2);
-      ctx.shadowBlur = 0;
-      ctx.font = `${16 * k}px Consolas, monospace`;
-      ctx.fillStyle = `rgba(242,244,247,${0.7 * a})`;
-      ctx.fillText('SPACE  Restart      ESC  Exit', w / 2, h / 2 + 50 * k);
-    }
+    // 'end' 이후 조각 낙하 / DESKTOP DESTROYED 화면은 ending.ts의 ShatterEnding이 그린다
   }
 
   reset() {
     this.phase = 'idle';
     this.t = 0;
     this.puffs = [];
-    this.pieces = [];
   }
 }

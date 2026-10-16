@@ -11,6 +11,12 @@ const SLOT = 64;
 const GAP = 8;
 const PAD = 12;
 
+/**
+ * 진짜 바탕화면 엔딩 (창을 투명 + 클릭 통과로 전환). 문제가 생기면 false로 → 스크린샷 엔딩만 쓴다.
+ * (완전히 되돌리려면 tauri.conf.json의 "transparent": true 도 지운다)
+ */
+const REVEAL_ENABLED = true;
+
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 const quit = () => {
   void invoke('quit_app');
@@ -33,7 +39,9 @@ export default function App() {
   const [hover, setHover] = useState<ToolInfo | null>(null);
   /** 누적 타격 횟수 (Space 초기화해도 유지) */
   const [hits, setHits] = useState(0);
-  const [toast, setToast] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ title: string; sub: string } | null>(null);
+  /** SCORE / 콤보 / 파괴율 (엔진이 바뀔 때만 알려줌. Space 초기화 시 0) */
+  const [stats, setStats] = useState({ score: 0, combo: 0, percent: 0 });
   /** 엔진의 탄약 상태가 바뀌면 증가 (다시 그리기용) */
   const [, setAmmoTick] = useState(0);
 
@@ -51,8 +59,8 @@ export default function App() {
     }
   }, [tool]);
 
-  const showToast = (msg: string) => {
-    setToast(msg);
+  const showToast = (title: string, sub = 'Right-click to equip') => {
+    setToast({ title, sub });
     window.clearTimeout(toastTimer.current);
     toastTimer.current = window.setTimeout(() => setToast(null), 2600);
   };
@@ -102,6 +110,24 @@ export default function App() {
         engine.onScore = addScore;
         engine.onFire = kickCursor;
         engine.onAmmo = () => setAmmoTick((v) => v + 1);
+        engine.onStats = setStats;
+        // 100% 알림 → 슬로모션 뒤 엔진이 유리 조각 엔딩을 시작한다
+        engine.onComplete = () => showToast('100% DESTROYED', 'SYSTEM COLLAPSE');
+        if (REVEAL_ENABLED) {
+          // Rust가 숨김 → 클릭 통과 → 테두리 없는 창 → 표시까지 끝내면 배경을 투명하게
+          engine.onReveal = async () => {
+            try {
+              await invoke('enter_reveal');
+              setInv(null);
+              document.documentElement.classList.add('reveal');
+              return true;
+            } catch (err) {
+              console.warn('[desktop-destroyer] 진짜 바탕화면 전환 실패 → 스크린샷 엔딩', err);
+              return false;
+            }
+          };
+          engine.onRevealDone = quit;
+        }
         engine.scope = toolRef.current === 'm4';
         engine.tool = toolRef.current;
         engine.bugsUnlocked = hitsRef.current >= (TOOLS.find((t) => t.id === 'bugs')?.unlockAt ?? Infinity);
@@ -143,9 +169,21 @@ export default function App() {
         }
       } else if (e.code === 'Space') {
         e.preventDefault();
-        if (!e.repeat) engineRef.current?.reset();
+        // Space = 되감기 연출, Shift+Space = 즉시 초기화
+        if (!e.repeat) {
+          if (e.shiftKey) engineRef.current?.reset();
+          else engineRef.current?.rewind();
+        }
       } else if (key === 'r') {
         engineRef.current?.reload(toolRef.current);
+      } else if (e.code === 'KeyT' && !e.repeat) {
+        // 화면 뒤 세계 테마 순환 (새로 생기는 균열부터 적용)
+        const label = engineRef.current?.cycleTheme();
+        if (label) showToast(`THEME · ${label}`, 'T to change');
+      } else if (e.code === 'KeyL' && !e.repeat) {
+        // 개발자 유머 로그 켜고 끄기
+        const log = engineRef.current?.log;
+        if (log) log.visible = !log.visible;
       } else if (key === 'u' && e.shiftKey) {
         // 촬영/테스트용: Shift+U = 전체 해금
         const need = Math.max(...TOOLS.map((t) => t.unlockAt));
@@ -223,7 +261,7 @@ export default function App() {
   };
 
   const toolInfo = TOOLS.find((t) => t.id === tool)!;
-  const ammo = engineRef.current?.ammoInfo(tool) ?? null;
+  const res = engineRef.current?.resourceInfo(tool) ?? null;
   const cursorSvg = CURSOR_SVG[tool];
   const [bx, by, bw, bh] = cursorSvg.box;
 
@@ -272,7 +310,7 @@ export default function App() {
               <kbd className="space">SPACE</kbd>
               Return
             </span>
-            {ammo && (
+            {res?.kind === 'ammo' && (
               <span className="keyhint">
                 <kbd>R</kbd>
                 Reload
@@ -290,25 +328,56 @@ export default function App() {
             </span>
           </div>
 
-          {ammo && (
+          {/* SCORE + 파괴율 + 콤보 (오른쪽 위) */}
+          <div className="hud hud-score">
+            <div className="score-label">SCORE</div>
+            <b className="score-value">{stats.score.toLocaleString('en-US')}</b>
+            <div className="destroy">
+              <div className="destroy-head">
+                <span>DESTRUCTION</span>
+                <b>{stats.percent}%</b>
+              </div>
+              <div className={'destroy-bar' + (stats.percent >= 100 ? ' full' : '')}>
+                <div style={{ transform: `scaleX(${stats.percent / 100})` }} />
+              </div>
+            </div>
+            {stats.combo >= 2 && (
+              <div className="combo" key={stats.combo}>
+                COMBO <b>x{stats.combo}</b>
+              </div>
+            )}
+          </div>
+
+          {res && (
             <div className="hud hud-ammo">
-              <div className="ammo-count">
-                <b className={ammo.ammo === 0 ? 'empty' : ''}>{ammo.ammo}</b>
-                <span>/ {ammo.mag}</span>
-              </div>
-              <div className={'ammo-pips' + (ammo.mag > 10 ? ' dense' : '')}>
-                {Array.from({ length: ammo.mag }, (_, i) => (
-                  <i key={i} className={i < ammo.ammo ? 'on' : ''} />
-                ))}
-              </div>
-              {ammo.reloading && (
+              {res.kind === 'ammo' ? (
+                <>
+                  <div className="ammo-count">
+                    <b className={res.cur === 0 ? 'empty' : ''}>{res.cur}</b>
+                    <span>/ {res.max}</span>
+                  </div>
+                  <div className={'ammo-pips' + (res.max > 10 ? ' dense' : '')}>
+                    {Array.from({ length: res.max }, (_, i) => (
+                      <i key={i} className={i < res.cur ? 'on' : ''} />
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <div className="fuel">
+                  <span>FUEL</span>
+                  <div className={'fuel-bar' + (res.cur / res.max < 0.2 ? ' low' : '')}>
+                    <div style={{ transform: `scaleX(${res.cur / res.max})` }} />
+                  </div>
+                </div>
+              )}
+              {res.reloading && (
                 <div className="ammo-reload">
                   <span>RELOADING</span>
                   <div className="bar">
                     <div
                       style={{
-                        animationDuration: `${ammo.reloadDur}s`,
-                        animationDelay: `-${ammo.reloadDur - ammo.reloadLeft}s`,
+                        animationDuration: `${res.reloadDur}s`,
+                        animationDelay: `-${res.reloadDur - res.reloadLeft}s`,
                       }}
                     />
                   </div>
@@ -318,13 +387,13 @@ export default function App() {
           )}
 
           <div className="hud hud-help">
-            H HUD 숨김 · M {muted ? '소리 켜기' : '음소거'}
+            H HUD 숨김 · T 테마 · L 로그 · M {muted ? '소리 켜기' : '음소거'}
           </div>
 
           {toast && (
-            <div className="hud hud-toast" key={toast}>
-              <b>{toast}</b>
-              <span>Right-click to equip</span>
+            <div className="hud hud-toast" key={toast.title}>
+              <b>{toast.title}</b>
+              <span>{toast.sub}</span>
             </div>
           )}
         </>

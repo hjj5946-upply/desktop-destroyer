@@ -1,5 +1,6 @@
 import type { DestroyEngine } from '../engine';
 import { CRACK_STYLE, createCrack } from '../crack';
+import { CELL } from '../grid';
 import { burst, halfPlane, particle, pick, rand, RegionShift, TAU, type Pt, type Weapon } from './util';
 
 // ───────────── 6. 드릴: 누르고 있으면 구멍이 점점 깊어지고 가루가 튄다 ─────────────
@@ -76,6 +77,7 @@ export class Drill implements Weapon {
       );
     }
 
+    e.grid.markCircle(s.x, s.y, r, dt * 1.5);
     e.shake = Math.max(e.shake, 2.2 * k);
     e.hits = Math.max(e.hits, 1);
     e.hitRoaches(s.x, s.y, 0);
@@ -147,6 +149,8 @@ export class Laser implements Weapon {
       d.lineTo(b.x, b.y);
       d.stroke();
     }
+    this.e.grid.markPath([a, b], 1, CELL.BURNING);
+    this.e.react('fire', b.x, b.y, 10 * k);
   }
 
   release() {
@@ -181,6 +185,7 @@ export class Laser implements Weapon {
         0.45,
       ),
     );
+    e.grid.markPath(line, 0.5);
     this.seams.push({ pts: line, t: 0, dur: 1.6 });
     e.shake = Math.max(e.shake, 9 * e.k);
     e.sfx.laserSplit();
@@ -282,6 +287,8 @@ export class Magnifier implements Weapon {
       d.beginPath();
       d.arc(s.x, s.y, r, 0, TAU);
       d.fill();
+      e.grid.markCircle(s.x, s.y, r, dt, CELL.BURNING);
+      e.react('fire', s.x, s.y, r);
       e.hits = Math.max(e.hits, 1);
     }
 
@@ -435,6 +442,9 @@ export class Freeze implements Weapon {
         d.stroke();
       }
       p.r = nr;
+      // 얼리기만 (피해 없음). 판정용이라 셀 하나 정도 넉넉하게 칠한다
+      e.grid.markCircle(p.x, p.y, p.r + e.grid.size * 0.75, 0, CELL.FROZEN);
+      e.react('cold', p.x, p.y, p.r);
       e.freezeRoaches(p.x, p.y, p.r);
       e.hits = Math.max(e.hits, 1);
     }
@@ -458,6 +468,8 @@ export class Freeze implements Weapon {
     d.fill();
     d.restore();
     e.addCrack(createCrack(x, y, p.r * 1.3, k, { rays: 10, width: 1.6, style: CRACK_STYLE.glass }));
+    e.grid.clearFlag(p.x, p.y, p.r, CELL.FROZEN);
+    e.grid.markCircle(p.x, p.y, p.r * 0.6, 1);
 
     e.spawnShards(p.x, p.y, Math.min(60, 18 + Math.floor(p.r / k / 4)));
     burst(e, p.x, p.y, 40, {
@@ -473,6 +485,28 @@ export class Freeze implements Weapon {
     e.hitRoaches(p.x, p.y, p.r, false, 0);
     e.sfx.iceShatter();
     return true;
+  }
+
+  /** 불에 녹음: 불 범위(x, y, r)와 겹치는 얼음을 지우고 물자국을 남긴다. 녹은 얼음들을 돌려준다 */
+  meltAt(x: number, y: number, r: number): { x: number; y: number; r: number }[] {
+    const melted = this.patches.filter((p) => Math.hypot(x - p.x, y - p.y) < p.r + r);
+    if (melted.length === 0) return melted;
+    this.patches = this.patches.filter((p) => !melted.includes(p));
+    if (this.current && melted.includes(this.current)) this.current = null;
+    const d = this.e.dctx;
+    for (const p of melted) {
+      d.save();
+      d.globalCompositeOperation = 'destination-out';
+      d.beginPath();
+      d.arc(p.x, p.y, p.r, 0, TAU);
+      d.fill();
+      d.restore();
+      d.fillStyle = 'rgba(120,170,210,0.1)';
+      d.beginPath();
+      d.arc(p.x, p.y, p.r * 0.9, 0, TAU);
+      d.fill();
+    }
+    return melted;
   }
 
   reset() {
@@ -541,6 +575,7 @@ export class Acid implements Weapon {
       gravity: 1200,
       additive: true,
     });
+    e.grid.markCircle(x, y, 60 * k, 1);
     e.hitRoaches(x, y, 45 * k, true);
     e.hits = Math.max(e.hits, 1);
     e.sfx.acid();
@@ -582,6 +617,7 @@ export class Acid implements Weapon {
           }),
         );
       }
+      e.grid.markCircle(dr.x, dr.y, 0, dt * 1.5);
       e.hitRoaches(dr.x, dr.y, dr.w, true, 0);
     }
   }
@@ -665,6 +701,7 @@ export class Paint implements Weapon {
       size: [2, 5],
       gravity: 1600,
     });
+    e.grid.markCircle(x, y, R, 0.5);
     e.shake = Math.max(e.shake, 4 * k);
     e.hits += 1;
     e.hitRoaches(x, y, R * 0.8);

@@ -1,6 +1,6 @@
 import type { DestroyEngine } from '../engine';
 import { createCrack } from '../crack';
-import { cutPiece } from './disasters';
+import { CELL } from '../grid';
 import { burst, makeCanvas, particle, pick, rand, TAU, type Pt, type Weapon } from './util';
 
 const ease3 = (p: number) => 1 - (1 - Math.min(1, Math.max(0, p))) ** 3;
@@ -136,6 +136,8 @@ export class Press implements Weapon {
       );
     }
 
+    e.grid.markRect(L, T, s.w, s.h, 1);
+    e.impact(s.x, s.y, 0.6);
     e.shake = Math.max(e.shake, 32 * k);
     e.hits += 2;
     e.hitRoaches(s.x, s.y, Math.max(s.w, s.h) * 0.5, false, 600 * k);
@@ -429,6 +431,7 @@ export class Sticker implements Weapon {
       s.t += dt;
       if (s.t >= 0.16) {
         paintSticker(e.dctx, s, 1, e.k); // 붙으면 영구 레이어로
+        e.grid.markCircle(s.x, s.y, s.R, 0.3);
         this.popping.splice(i, 1);
         e.hits += 1;
       }
@@ -450,126 +453,12 @@ export class Sticker implements Weapon {
 
 // ───────────── 23. 시간 되감기: 부서진 조각이 거꾸로 붙으며 처음 상태로 돌아온다 ─────────────
 
-interface RewindPiece {
-  cv: HTMLCanvasElement;
-  ox: number;
-  oy: number;
-  cx: number;
-  cy: number;
-  sx: number;
-  sy: number;
-  srot: number;
-  delay: number;
-}
-
-const RW_FLY = 0.7;
-const RW_END = 1.75;
-
+/** Space와 같은 되감기 연출(ending.ts RewindEnding)을 쓴다. SCORE/콤보는 유지 */
 export class Rewind implements Weapon {
-  private t = -1;
-  private snap: HTMLCanvasElement | null = null;
-  private pieces: RewindPiece[] = [];
-
   constructor(private readonly e: DestroyEngine) {}
 
   press() {
-    if (this.t >= 0) return false;
-    const e = this.e;
-    // 지금 부서진 화면을 배경으로 두고, 깨끗한 원래 화면 조각들이 날아와 맞춰진다
-    const { c, ctx } = makeCanvas(e.w, e.h);
-    ctx.drawImage(e.scene, 0, 0);
-    this.snap = c;
-    this.pieces = [];
-    const cols = 8;
-    const rows = 5;
-    const grid: Pt[][] = [];
-    for (let r = 0; r <= rows; r++) {
-      const row: Pt[] = [];
-      for (let col = 0; col <= cols; col++) {
-        const edge = r === 0 || col === 0 || r === rows || col === cols;
-        row.push({
-          x: (col / cols) * e.w + (edge ? 0 : rand(-0.3, 0.3) * (e.w / cols)),
-          y: (r / rows) * e.h + (edge ? 0 : rand(-0.3, 0.3) * (e.h / rows)),
-        });
-      }
-      grid.push(row);
-    }
-    for (let r = 0; r < rows; r++) {
-      for (let col = 0; col < cols; col++) {
-        const a = grid[r][col];
-        const b = grid[r][col + 1];
-        const cc = grid[r + 1][col + 1];
-        const d = grid[r + 1][col];
-        for (const poly of [
-          [a, b, cc],
-          [a, cc, d],
-        ]) {
-          const pc = cutPiece(e.shot, poly);
-          this.pieces.push({
-            cv: pc.cv,
-            ox: pc.ox,
-            oy: pc.oy,
-            cx: pc.cx,
-            cy: pc.cy,
-            sx: rand(-0.6, 0.6) * e.w,
-            sy: rand(0.5, 1.2) * e.h, // 아래로 떨어졌던 조각이 거꾸로 날아오름
-            srot: rand(-4, 4),
-            delay: Math.random() * 0.8,
-          });
-        }
-      }
-    }
-    this.t = 0;
-    e.sfx.rewind();
-    return true;
-  }
-
-  update(dt: number) {
-    if (this.t < 0) return;
-    this.t += dt;
-    if (this.t >= RW_END) {
-      this.e.reset(); // 처음 상태로 (이 무기의 reset도 같이 불림)
-      this.e.sfx.rewindEnd();
-    }
-  }
-
-  drawTop(ctx: CanvasRenderingContext2D) {
-    if (this.t < 0 || !this.snap) return;
-    const { w, h, k } = this.e;
-    ctx.drawImage(this.snap, 0, 0);
-    ctx.fillStyle = 'rgba(60,90,255,0.08)';
-    ctx.fillRect(0, 0, w, h);
-    for (const p of this.pieces) {
-      const q = ease3((this.t - p.delay) / RW_FLY);
-      ctx.save();
-      ctx.translate(p.ox + p.cx + p.sx * (1 - q), p.oy + p.cy + p.sy * (1 - q));
-      ctx.rotate(p.srot * (1 - q));
-      ctx.drawImage(p.cv, -p.cx, -p.cy);
-      ctx.restore();
-    }
-    // VHS 되감기 화면
-    ctx.fillStyle = 'rgba(0,0,0,0.14)';
-    for (let y = 0; y < h; y += 3 * k) ctx.fillRect(0, y, w, 1.2 * k);
-    for (let i = 0; i < 3; i++) {
-      ctx.fillStyle = `rgba(255,255,255,${rand(0.04, 0.12)})`;
-      ctx.fillRect(0, Math.random() * h, w, rand(2, 8) * k);
-    }
-    if (Math.floor(this.t * 4) % 2 === 0) {
-      ctx.save();
-      ctx.font = `bold ${30 * k}px Consolas, monospace`;
-      ctx.textAlign = 'left';
-      ctx.shadowColor = 'rgba(255,255,255,0.8)';
-      ctx.shadowBlur = 10 * k;
-      ctx.fillStyle = '#fff';
-      ctx.fillText('◀◀ REWIND', 48 * k, 70 * k);
-      ctx.restore();
-    }
-  }
-
-  reset() {
-    this.t = -1;
-    this.snap = null;
-    this.pieces = [];
+    return this.e.rewind(true);
   }
 }
 
@@ -613,6 +502,8 @@ export class Tsunami implements Weapon {
       const dx = Math.sin(y / (50 * k) + ph) * 6 * k;
       b.drawImage(e.base, 0, y, e.w, step, dx, y, e.w, step);
     }
+    e.react('water', e.w / 2, e.h / 2, Math.hypot(e.w, e.h)); // 물에 잠기면 불이 꺼진다
+    e.grid.markRect(0, 0, e.w, e.h, 0.3, CELL.WET);
     const d = e.dctx;
     d.fillStyle = 'rgba(30,90,160,0.12)';
     d.fillRect(0, 0, e.w, e.h);

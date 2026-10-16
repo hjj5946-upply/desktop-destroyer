@@ -33,6 +33,20 @@ export interface Weapon {
   present?(out: CanvasRenderingContext2D, scene: HTMLCanvasElement): boolean;
   /** Space 초기화 */
   reset?(): void;
+  /** 탄약/연료 같은 자원 (없으면 무제한) */
+  resource?(): ResourceInfo | null;
+}
+
+/** HUD 표시용 무기 자원. ammo = 탄창(칸 표시), fuel = 연료(막대 표시) */
+export interface ResourceInfo {
+  kind: 'ammo' | 'fuel';
+  cur: number;
+  max: number;
+  /** 재장전/재충전 중 */
+  reloading: boolean;
+  /** 재장전 전체 시간 / 남은 시간 (초) */
+  reloadDur: number;
+  reloadLeft: number;
 }
 
 /** 범용 파티클 (가루, 불꽃, 물방울 등) */

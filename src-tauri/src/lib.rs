@@ -7,6 +7,8 @@
 //!     - 전역 ESC 단축키: 웹뷰가 멈추거나 포커스를 잃어도 종료 가능
 //!     - 시작 워치독: 프론트가 준비 신호를 못 보내면(오류 등) 창을 띄우지 않고 READY_TIMEOUT_SECS 초 뒤 종료
 //!       (오버레이가 뜬 뒤에는 시간 제한 없음. 종료는 ESC로만 한다)
+//!     - 엔딩(진짜 바탕화면 노출) 워치독: `enter_reveal`로 투명 + 클릭 통과가 되면 REVEAL_SECS 초 뒤 무조건 종료
+//!       (클릭 통과 창은 포커스를 잃어 프론트 ESC가 안 먹을 수 있으므로, 전역 ESC가 없으면 아예 들어가지 않는다)
 
 use std::{
     sync::Mutex,
@@ -21,6 +23,8 @@ use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Shortcut, ShortcutSt
 const CAPTURE_DELAY_SECS: u64 = 5;
 /// 캡처 이후 프론트가 `overlay_ready`를 불러야 하는 제한 시간. 넘기면 앱 종료.
 const READY_TIMEOUT_SECS: u64 = 20;
+/// 투명 + 클릭 통과 엔딩에 들어간 뒤 강제 종료까지의 시간 (정상이면 프론트가 그 전에 종료한다)
+const REVEAL_SECS: u64 = 12;
 
 enum ShotData {
     Pending,
@@ -32,6 +36,8 @@ struct AppState {
     shot: Mutex<ShotData>,
     /// 이 시각이 지나면 워치독이 앱을 종료한다. None이면 시간 제한 없음(오버레이 표시 후).
     deadline: Mutex<Option<Instant>>,
+    /// 전역 ESC 등록 성공 여부 (실패했으면 클릭 통과 엔딩을 거부한다)
+    esc_ok: Mutex<bool>,
 }
 
 /// 주 모니터를 캡처해서 PNG 바이트로 돌려준다.
@@ -110,6 +116,47 @@ fn overlay_ready(app: AppHandle, state: State<AppState>) -> Result<(), String> {
     Ok(())
 }
 
+/// 엔딩: 오버레이를 클릭 통과 + 테두리 없는 창으로 바꿔 진짜 바탕화면이 비치게 한다.
+/// (투명은 tauri.conf.json의 transparent + 프론트 CSS 배경 투명으로 처리)
+///
+/// 순서 (CursorToy 규칙): 마감 설정 → 숨김 → 클릭 통과 → 전체화면 해제 + 크기/위치 → 표시 → 확인
+/// 실패하면 Err → 프론트는 스크린샷 엔딩(D-2)으로 진행. 마감은 이미 걸려 있으므로 그 경우에도 REVEAL_SECS 뒤 종료된다.
+#[tauri::command]
+fn enter_reveal(app: AppHandle, state: State<AppState>) -> Result<(), String> {
+    if !*state.esc_ok.lock().unwrap() {
+        return Err("전역 ESC가 등록되지 않아 클릭 통과 엔딩을 쓰지 않습니다".to_string());
+    }
+    // 무엇보다 먼저 마감을 건다 (아래 단계 어디서 멈추거나 실패해도 워치독이 종료)
+    *state.deadline.lock().unwrap() = Some(Instant::now() + Duration::from_secs(REVEAL_SECS));
+
+    let win = app
+        .get_webview_window("main")
+        .ok_or_else(|| "main 창을 찾지 못했습니다".to_string())?;
+
+    let result = (|| -> Result<(), String> {
+        win.hide().map_err(|e| e.to_string())?;
+        win.set_ignore_cursor_events(true).map_err(|e| e.to_string())?;
+        win.set_fullscreen(false).map_err(|e| e.to_string())?;
+        if let Ok(Some(mon)) = win.primary_monitor() {
+            win.set_position(*mon.position()).map_err(|e| e.to_string())?;
+            win.set_size(*mon.size()).map_err(|e| e.to_string())?;
+        }
+        win.show().map_err(|e| e.to_string())?;
+        if !win.is_visible().map_err(|e| e.to_string())? {
+            return Err("창이 다시 보이지 않습니다".to_string());
+        }
+        Ok(())
+    })();
+
+    if let Err(e) = &result {
+        eprintln!("[desktop-destroyer] 클릭 통과 전환 실패: {e}");
+        // 원래대로 되돌린 뒤 보이게 해서 스크린샷 엔딩이 이어지게 한다 (실패해도 무시, 마감이 처리)
+        let _ = win.set_ignore_cursor_events(false);
+        let _ = win.show();
+    }
+    result
+}
+
 /// ESC 등으로 프론트에서 종료 요청
 #[tauri::command]
 fn quit_app(app: AppHandle) {
@@ -136,20 +183,23 @@ pub fn run() {
             deadline: Mutex::new(Some(
                 Instant::now() + Duration::from_secs(CAPTURE_DELAY_SECS + READY_TIMEOUT_SECS),
             )),
+            esc_ok: Mutex::new(false),
         })
         .invoke_handler(tauri::generate_handler![
             screenshot_status,
             get_screenshot,
             overlay_ready,
+            enter_reveal,
             quit_app
         ])
         .setup(|app| {
             // 1) 전역 ESC 등록 (실패해도 앱은 계속 진행 - 프론트 ESC가 있으므로)
-            if let Err(e) = app
+            match app
                 .global_shortcut()
                 .register(Shortcut::new(None, Code::Escape))
             {
-                eprintln!("[desktop-destroyer] 전역 ESC 등록 실패: {e}");
+                Ok(()) => *app.state::<AppState>().esc_ok.lock().unwrap() = true,
+                Err(e) => eprintln!("[desktop-destroyer] 전역 ESC 등록 실패: {e}"),
             }
 
             // 2) 시작 워치독: 100ms마다 마감 시각 확인. 마감이 지나면 종료. (마감이 None이면 통과)

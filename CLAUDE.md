@@ -20,6 +20,8 @@
 2. **프론트 ESC** (`App.tsx`의 keydown → `quit_app`)
 3. **시작 워치독** (`lib.rs`): `overlay_ready` 전까지만 동작. 마감이 지나면 `app.exit(0)` 후 2초 뒤 `process::exit(0)`
    - 오버레이가 뜬 뒤의 실행 시간 제한(구 `MAX_RUN_SECS` 60초)은 깜자 요청으로 제거함 (2026-10-16). 종료는 ESC로만 한다.
+   - 예외: 진짜 바탕화면 엔딩(`enter_reveal`, 투명 + 클릭 통과)에 들어가면 `REVEAL_SECS`(12초) 마감을 다시 건다 (깜자 승인).
+     전역 ESC 등록에 실패했으면 `enter_reveal`은 거부되고 스크린샷 엔딩으로 진행한다.
 4. **창은 `overlay_ready` 전까지 숨김**: 프론트가 실패하면 창이 뜨지 않고 `READY_TIMEOUT_SECS` 뒤 종료
 
 추가 규칙
@@ -30,8 +32,8 @@
 ## 2. 구조
 
 ```
-src-tauri/src/lib.rs   캡처(xcap) · 워치독 · 전역 ESC · 커맨드 4개
-                       screenshot_status / get_screenshot / overlay_ready / quit_app
+src-tauri/src/lib.rs   캡처(xcap) · 워치독 · 전역 ESC · 커맨드 5개
+                       screenshot_status / get_screenshot / overlay_ready / enter_reveal / quit_app
 src/App.tsx            시작 시퀀스, 키보드, HUD, 인벤토리, 무기 커서
 src/tools.tsx          무기 목록(이름/설명/해금 점수) + 기본 커서·아이콘 SVG
 src/game/engine.ts     캔버스 렌더 루프, 기본 무기 5종(망치/권총/M4A1/화염/폭탄), 바퀴벌레, 스코프
@@ -41,7 +43,14 @@ src/game/weapons/      확장 무기 15종 (engine에 Weapon 인터페이스로 
   disasters.ts         지진/번개/운석/블랙홀/중력해제/벌레
   special.ts           글리치/CRT OFF/핵폭탄(+엔딩)
   extra.ts             거대 프레스/스티커/시간 되감기/쓰나미
-src/game/crack.ts      유리 금 생성/그리기 (무기별 색 CRACK_STYLE)
+src/game/crack.ts      유리 금 생성/그리기 (무기별 색 CRACK_STYLE, 테마 글로우 CrackTint)
+src/game/grid.ts       격자 상태 맵 (셀 피해/플래그, 파괴율 BREAK_GOAL, 임시 플래그 수명)
+src/game/combo.ts      콤보 + SCORE (해금 점수와 별개)
+src/game/reactions.ts  무기 조합 규칙표 (e.react(속성, x, y, r)로 판정)
+src/game/theme.ts      화면 뒤 세계 테마 (T키)
+src/game/collapse.ts   시스템 붕괴 연출 (노이즈/어두운 깜빡임/경고 패널)
+src/game/devlog.ts     개발자 유머 로그 (L키)
+src/game/ending.ts     엔딩 연출: RewindEnding(Space/시간 되감기 무기) · ShatterEnding(100%/핵폭탄 유리 조각 낙하)
 src/game/audio.ts      WebAudio 효과음 합성
 ```
 
