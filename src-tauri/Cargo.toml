@@ -1,0 +1,25 @@
+[package]
+name = "desktop-destroyer"
+version = "0.1.0"
+description = "바탕화면 부수기 - 스크린샷 위에서 유리를 깨뜨리는 릴스용 장난감"
+edition = "2021"
+
+[lib]
+name = "desktop_destroyer_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+# 전역 ESC 비상 종료용 (웹뷰가 멈춰도 동작)
+tauri-plugin-global-shortcut = "2"
+# 주 모니터 스크린샷 캡처
+xcap = "0.9"
+# 캡처한 화면을 PNG 바이트로 인코딩 (xcap이 요구하는 image 0.25와 맞춤)
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+# dev 모드에서도 의존성은 최적화해서 컴파일 (안 하면 4K PNG 인코딩이 몇 초씩 걸림)
+[profile.dev.package."*"]
+opt-level = 3
