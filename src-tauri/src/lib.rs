@@ -5,8 +5,8 @@
 //!  2. 프론트가 캡처 이미지를 불러와 첫 화면을 그린 뒤 `overlay_ready`를 부르면 창을 전체화면으로 띄움
 //!  3. 안전장치 (이 프로젝트에서 가장 중요한 부분!)
 //!     - 전역 ESC 단축키: 웹뷰가 멈추거나 포커스를 잃어도 종료 가능
-//!     - 워치독 타이머: 어떤 경우에도 MAX_RUN_SECS 초 뒤에는 프로세스가 스스로 종료
-//!     - 프론트가 준비 신호를 못 보내면(오류 등) 창을 띄우지 않고 READY_TIMEOUT_SECS 초 뒤 종료
+//!     - 시작 워치독: 프론트가 준비 신호를 못 보내면(오류 등) 창을 띄우지 않고 READY_TIMEOUT_SECS 초 뒤 종료
+//!       (오버레이가 뜬 뒤에는 시간 제한 없음. 종료는 ESC로만 한다)
 
 use std::{
     sync::Mutex,
@@ -19,8 +19,6 @@ use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Shortcut, ShortcutSt
 
 /// 앱 시작 후 캡처까지 기다리는 시간. 이 사이에 바탕화면을 정리(Win+D 등)한다.
 const CAPTURE_DELAY_SECS: u64 = 5;
-/// 오버레이가 화면에 뜬 뒤 강제 종료까지의 시간.
-const MAX_RUN_SECS: u64 = 60;
 /// 캡처 이후 프론트가 `overlay_ready`를 불러야 하는 제한 시간. 넘기면 앱 종료.
 const READY_TIMEOUT_SECS: u64 = 20;
 
@@ -32,8 +30,8 @@ enum ShotData {
 
 struct AppState {
     shot: Mutex<ShotData>,
-    /// 이 시각이 지나면 워치독이 앱을 종료한다.
-    deadline: Mutex<Instant>,
+    /// 이 시각이 지나면 워치독이 앱을 종료한다. None이면 시간 제한 없음(오버레이 표시 후).
+    deadline: Mutex<Option<Instant>>,
 }
 
 /// 주 모니터를 캡처해서 PNG 바이트로 돌려준다.
@@ -90,10 +88,9 @@ fn get_screenshot(state: State<AppState>) -> Result<Response, String> {
     }
 }
 
-/// 프론트가 첫 화면을 그린 뒤 호출 -> 창을 전체화면으로 띄우고 종료 타이머를 시작한다.
-/// 반환값: 앞으로 남은 시간(초)
+/// 프론트가 첫 화면을 그린 뒤 호출 -> 창을 전체화면으로 띄우고 시작 워치독을 해제한다.
 #[tauri::command]
-fn overlay_ready(app: AppHandle, state: State<AppState>) -> Result<u64, String> {
+fn overlay_ready(app: AppHandle, state: State<AppState>) -> Result<(), String> {
     let win = app
         .get_webview_window("main")
         .ok_or_else(|| "main 창을 찾지 못했습니다".to_string())?;
@@ -108,9 +105,9 @@ fn overlay_ready(app: AppHandle, state: State<AppState>) -> Result<u64, String> 
     win.show().map_err(|e| e.to_string())?;
     let _ = win.set_focus();
 
-    // 이 시점부터 MAX_RUN_SECS 카운트다운
-    *state.deadline.lock().unwrap() = Instant::now() + Duration::from_secs(MAX_RUN_SECS);
-    Ok(MAX_RUN_SECS)
+    // 정상적으로 떴으므로 시간 제한 해제 (이후 종료는 ESC)
+    *state.deadline.lock().unwrap() = None;
+    Ok(())
 }
 
 /// ESC 등으로 프론트에서 종료 요청
@@ -136,9 +133,9 @@ pub fn run() {
         .manage(AppState {
             shot: Mutex::new(ShotData::Pending),
             // 처음에는 "캡처 대기 + 준비 제한시간"까지만 살아 있도록 설정
-            deadline: Mutex::new(
+            deadline: Mutex::new(Some(
                 Instant::now() + Duration::from_secs(CAPTURE_DELAY_SECS + READY_TIMEOUT_SECS),
-            ),
+            )),
         })
         .invoke_handler(tauri::generate_handler![
             screenshot_status,
@@ -147,7 +144,7 @@ pub fn run() {
             quit_app
         ])
         .setup(|app| {
-            // 1) 전역 ESC 등록 (실패해도 앱은 계속 진행 - 워치독이 있으므로)
+            // 1) 전역 ESC 등록 (실패해도 앱은 계속 진행 - 프론트 ESC가 있으므로)
             if let Err(e) = app
                 .global_shortcut()
                 .register(Shortcut::new(None, Code::Escape))
@@ -155,13 +152,13 @@ pub fn run() {
                 eprintln!("[desktop-destroyer] 전역 ESC 등록 실패: {e}");
             }
 
-            // 2) 워치독: 100ms마다 마감 시각 확인. 마감이 지나면 종료.
+            // 2) 시작 워치독: 100ms마다 마감 시각 확인. 마감이 지나면 종료. (마감이 None이면 통과)
             //    app.exit()가 먹지 않는 최악의 경우를 대비해 2초 뒤 프로세스를 강제 종료한다.
             let watchdog_app = app.handle().clone();
             thread::spawn(move || loop {
                 thread::sleep(Duration::from_millis(100));
                 let deadline = *watchdog_app.state::<AppState>().deadline.lock().unwrap();
-                if Instant::now() >= deadline {
+                if deadline.is_some_and(|d| Instant::now() >= d) {
                     eprintln!("[desktop-destroyer] 시간 초과 - 종료합니다");
                     watchdog_app.exit(0);
                     thread::sleep(Duration::from_secs(2));

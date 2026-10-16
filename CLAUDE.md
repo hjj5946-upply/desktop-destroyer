@@ -18,7 +18,8 @@
 
 1. **전역 ESC** (`src-tauri/src/lib.rs`, tauri-plugin-global-shortcut): 웹뷰가 멈춰도 종료
 2. **프론트 ESC** (`App.tsx`의 keydown → `quit_app`)
-3. **워치독 타이머** (`lib.rs`): `MAX_RUN_SECS`(60초) 뒤 반드시 종료, `app.exit(0)` 후 2초 뒤 `process::exit(0)`
+3. **시작 워치독** (`lib.rs`): `overlay_ready` 전까지만 동작. 마감이 지나면 `app.exit(0)` 후 2초 뒤 `process::exit(0)`
+   - 오버레이가 뜬 뒤의 실행 시간 제한(구 `MAX_RUN_SECS` 60초)은 깜자 요청으로 제거함 (2026-10-16). 종료는 ESC로만 한다.
 4. **창은 `overlay_ready` 전까지 숨김**: 프론트가 실패하면 창이 뜨지 않고 `READY_TIMEOUT_SECS` 뒤 종료
 
 추가 규칙
@@ -31,9 +32,16 @@
 ```
 src-tauri/src/lib.rs   캡처(xcap) · 워치독 · 전역 ESC · 커맨드 4개
                        screenshot_status / get_screenshot / overlay_ready / quit_app
-src/App.tsx            시작 시퀀스, 키보드, HUD, 망치 커서
-src/game/engine.ts     캔버스 렌더 루프, 도구별 타격 처리 (hit)
-src/game/crack.ts      유리 금 생성/그리기
+src/App.tsx            시작 시퀀스, 키보드, HUD, 인벤토리, 무기 커서
+src/tools.tsx          무기 목록(이름/설명/해금 점수) + 기본 커서·아이콘 SVG
+src/game/engine.ts     캔버스 렌더 루프, 기본 무기 5종(망치/권총/M4A1/화염/폭탄), 바퀴벌레, 스코프
+src/game/weapons/      확장 무기 15종 (engine에 Weapon 인터페이스로 꽂힘)
+  util.ts              Weapon 인터페이스, 범용 파티클, 화면 조각 이동(RegionShift)
+  tools.ts             드릴/레이저/돋보기/냉동총/산성액/페인트
+  disasters.ts         지진/번개/운석/블랙홀/중력해제/벌레
+  special.ts           글리치/CRT OFF/핵폭탄(+엔딩)
+  extra.ts             거대 프레스/스티커/시간 되감기/쓰나미
+src/game/crack.ts      유리 금 생성/그리기 (무기별 색 CRACK_STYLE)
 src/game/audio.ts      WebAudio 효과음 합성
 ```
 
@@ -42,14 +50,18 @@ src/game/audio.ts      WebAudio 효과음 합성
 
 ## 3. 작업 단계
 
-- 1단계 (현재): 스크린샷 전체화면 + 안전장치 + 망치(유리 금) 1종
-- 2단계: 총(총알 자국+균열), 화염방사기(그을음), 폭탄(폭발+파편) 추가 — `engine.ts`의 `hit()` switch에 case 추가
+- 1단계 (완료): 스크린샷 전체화면 + 안전장치 + 망치(유리 금)
+- 2단계 (완료): 무기 24종(핵폭탄이 마지막) + 누적 점수 해금(바퀴벌레 1마리=5점, Shift+U 전체 해금) + 우클릭 인벤토리 + 바퀴벌레
+  - 입력은 `engine.ts`의 `press/move/release`, 총기 제원은 `GUN_SPEC`
+  - 화면을 비트는 무기는 `engine.base`(스크린샷 사본)를 직접 고친다. Space 초기화 때 스크린샷으로 복구
+  - 무기 이미지는 `tools.tsx`의 `TOOLS[].icon`(인벤토리) / `TOOLS[].cursor`(커서)로 교체, 없으면 기본 SVG
+  - 핵폭탄 엔딩은 창 투명화 없이 "깨끗한 스크린샷"을 드러내는 방식 (진짜 바탕화면 노출은 3단계)
 - 3단계: 엔딩 연출 — 유리 조각이 우수수 떨어지며 진짜 바탕화면이 드러남
   (오버레이 창을 투명 + 클릭 통과로 전환해야 하므로 `set_ignore_cursor_events`를 **창이 보이기 전에** 적용하는 CursorToy 패턴 재사용)
 
 ## 4. 컨셉/톤
 
-어두운 시네마틱 톤 + 레트로 게임 HUD(앰버 모노스페이스) 약간. 릴스 촬영용이므로 `H`로 HUD를 숨길 수 있어야 한다.
+어두운 시네마틱 톤 + 게임 HUD(블랙 패널 + 화이트 네온 모노스페이스) 약간. 릴스 촬영용이므로 `H`로 HUD를 숨길 수 있어야 한다.
 
 ## 5. 알려진 주의점
 

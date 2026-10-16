@@ -18,7 +18,31 @@ export interface Seg {
   sd: number;
 }
 
+/** 균열 색 (무기마다 다르게) */
+export interface CrackStyle {
+  /** 그림자 (null이면 생략) */
+  shadow: string | null;
+  /** 바깥 선 */
+  main: string;
+  /** 가운데 가는 속선 (null이면 생략) */
+  core: string | null;
+  /** 속선 굵기 비율 */
+  coreScale: number;
+}
+
+export const CRACK_STYLE = {
+  /** 망치: 하얀 유리 금 + 푸른 속선 */
+  glass: { shadow: 'rgba(0,0,0,0.5)', main: 'rgba(255,255,255,0.88)', core: 'rgba(185,225,255,0.95)', coreScale: 0.4 },
+  /** 권총: 가늘고 차가운 회백색 */
+  pistol: { shadow: 'rgba(0,0,0,0.35)', main: 'rgba(220,226,232,0.78)', core: null, coreScale: 0 },
+  /** 소총: 굵은 흰 금 + 열기 먹은 주황 속선 */
+  rifle: { shadow: 'rgba(0,0,0,0.6)', main: 'rgba(255,255,255,0.92)', core: 'rgba(255,200,130,0.85)', coreScale: 0.35 },
+  /** 폭탄: 시커멓게 탄 금 + 불씨 */
+  char: { shadow: null, main: 'rgba(18,10,5,0.88)', core: 'rgba(255,120,30,0.55)', coreScale: 0.3 },
+} satisfies Record<string, CrackStyle>;
+
 export interface Crack {
+  style: CrackStyle;
   /** sd 오름차순으로 정렬된 선분들 */
   segs: Seg[];
   maxSd: number;
@@ -40,9 +64,16 @@ interface Pt {
  * @param scale 화면 짧은 변 길이 (균열 길이 기준)
  * @param k     해상도 보정 배율 (1080p = 1)
  */
-export function createCrack(cx: number, cy: number, scale: number, k: number): Crack {
+export function createCrack(
+  cx: number,
+  cy: number,
+  scale: number,
+  k: number,
+  opts: { rays?: number; width?: number; rings?: boolean; style?: CrackStyle } = {},
+): Crack {
   const segs: Seg[] = [];
-  const rayCount = 8 + Math.floor(Math.random() * 5);
+  const rayCount = opts.rays ?? 8 + Math.floor(Math.random() * 5);
+  const width = opts.width ?? 2.6;
   const base = Math.random() * Math.PI * 2;
   const rays: Pt[][] = [];
 
@@ -82,12 +113,12 @@ export function createCrack(cx: number, cy: number, scale: number, k: number): C
   for (let i = 0; i < rayCount; i++) {
     const pts: Pt[] = [];
     const angle = base + (i * Math.PI * 2) / rayCount + (Math.random() - 0.5) * 0.35;
-    walk(cx, cy, angle, scale * (0.25 + Math.random() * 0.4), 2.6, 0, 0, pts);
+    walk(cx, cy, angle, scale * (0.25 + Math.random() * 0.4), width, 0, 0, pts);
     rays.push(pts);
   }
 
   // 원형 균열: 이웃한 방사형 균열 사이를 같은 거리에서 이어준다
-  const radii = [0.05, 0.1, 0.17, 0.26].map((r) => r * scale);
+  const radii = opts.rings === false ? [] : [0.05, 0.1, 0.17, 0.26].map((r) => r * scale);
   const pick = (pts: Pt[], r: number) => pts.find((p) => p.d >= r);
   for (const R of radii) {
     for (let i = 0; i < rayCount; i++) {
@@ -104,11 +135,11 @@ export function createCrack(cx: number, cy: number, scale: number, k: number): C
 
   segs.sort((a, b) => a.sd - b.sd);
   const maxSd = segs.length > 0 ? segs[segs.length - 1].sd : 0;
-  return { segs, maxSd, t: 0, dur: 0.22, n: 0 };
+  return { style: opts.style ?? CRACK_STYLE.glass, segs, maxSd, t: 0, dur: 0.22, n: 0 };
 }
 
-/** 선분들을 3겹으로 그려 유리 금 느낌을 낸다 (그림자 → 흰 선 → 푸른 속선) */
-export function strokeSegs(ctx: CanvasRenderingContext2D, segs: Seg[], count: number, k: number) {
+/** 선분들을 최대 3겹으로 그린다 (그림자 → 바깥 선 → 속선) */
+export function strokeSegs(ctx: CanvasRenderingContext2D, segs: Seg[], count: number, k: number, style: CrackStyle) {
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
 
@@ -124,7 +155,7 @@ export function strokeSegs(ctx: CanvasRenderingContext2D, segs: Seg[], count: nu
     }
   };
 
-  pass('rgba(0,0,0,0.5)', 2, 1, 1, 1); // 그림자
-  pass('rgba(255,255,255,0.88)', 0, 1, 0, 0); // 흰 균열
-  pass('rgba(185,225,255,0.95)', 0, 0.4, 0, 0); // 푸른 속선
+  if (style.shadow) pass(style.shadow, 2, 1, 1, 1);
+  pass(style.main, 0, 1, 0, 0);
+  if (style.core) pass(style.core, 0, style.coreScale, 0, 0);
 }

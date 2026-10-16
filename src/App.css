@@ -24,8 +24,8 @@ body,
   display: block;
 }
 
-/* ───── 망치 커서 ───── */
-.hammer {
+/* ───── 무기 커서 ───── */
+.cursor {
   position: fixed;
   left: 0;
   top: 0;
@@ -37,106 +37,137 @@ body,
   filter: drop-shadow(0 4px 6px rgba(0, 0, 0, 0.55));
 }
 
-.hammer-inner {
+.cursor-inner {
   position: absolute;
   left: 0;
   top: 0;
   width: 0;
   height: 0;
-  transform: rotate(-32deg);
+  transform: none;
   transform-origin: 0 0;
   transition: transform 70ms ease-out;
 }
 
-.hammer-inner.hit {
+/* 클릭형 무기 공통 반동 */
+.cursor-inner.hit {
+  transform: scale(0.82);
+}
+
+.cursor-inner.hammer {
+  transform: rotate(-32deg);
+}
+
+.cursor-inner.hammer.hit {
   transform: rotate(14deg);
 }
 
-/* ───── 레트로 HUD (어두운 패널 + 앰버 글로우) ───── */
+.cursor-inner.gun {
+  transform: none;
+}
+
+.cursor-inner.gun.hit {
+  transform: scale(1.35);
+}
+
+.cursor-inner.m4 {
+  transform: none;
+}
+
+.cursor-inner.m4.hit {
+  transform: scale(1.18) translateY(-2px);
+}
+
+.cursor-inner.flame {
+  transform: rotate(-35deg);
+}
+
+.cursor-inner.flame.firing {
+  animation: flame-jitter 70ms linear infinite;
+}
+
+@keyframes flame-jitter {
+  0%,
+  100% {
+    transform: rotate(-35deg) translate(0, 0);
+  }
+  50% {
+    transform: rotate(-34deg) translate(1px, 2px);
+  }
+}
+
+.cursor-inner.bomb {
+  transform: none;
+}
+
+/* 누르고 있는 무기 (드릴/레이저/돋보기/냉동총) 떨림 */
+.cursor-inner.firing:not(.flame) {
+  animation: tool-jitter 60ms linear infinite;
+}
+
+@keyframes tool-jitter {
+  0%,
+  100% {
+    transform: translate(0, 0);
+  }
+  50% {
+    transform: translate(1px, 1.5px);
+  }
+}
+
+.cursor-inner.bomb.hit {
+  transform: scale(0.8);
+}
+
+/* ───── HUD (블랙 패널 + 화이트 네온) ───── */
 .hud {
   position: fixed;
   z-index: 40;
   font-family: Consolas, 'Courier New', monospace;
-  color: #ffbe55;
-  text-shadow: 0 0 8px rgba(255, 170, 40, 0.55);
+  color: #f2f4f7;
+  text-shadow: 0 0 8px rgba(255, 255, 255, 0.55);
   letter-spacing: 0.08em;
   pointer-events: none;
 }
 
-.hud-top {
-  top: 18px;
-  left: 24px;
-  right: 24px;
-  display: flex;
-  justify-content: space-between;
-  font-size: 14px;
-  opacity: 0.85;
-}
-
-.hud-top span {
-  background: rgba(10, 8, 6, 0.6);
-  border: 1px solid rgba(255, 190, 80, 0.35);
-  padding: 6px 12px;
-  backdrop-filter: blur(4px);
-}
-
-.hud-bottom {
-  bottom: 34px;
+.hud-keys {
+  bottom: 32px;
   left: 50%;
   transform: translateX(-50%);
   display: flex;
-  gap: 10px;
-  padding: 10px 12px;
-  background: rgba(10, 8, 6, 0.72);
-  border: 1px solid rgba(255, 190, 80, 0.55);
-  backdrop-filter: blur(6px);
-  box-shadow: 0 0 24px rgba(0, 0, 0, 0.5);
-  pointer-events: auto;
+  gap: 18px;
+  padding: 6px 14px;
+  font-size: 12px;
+  white-space: nowrap;
+  background: rgba(4, 4, 6, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  backdrop-filter: blur(4px);
+  opacity: 0.85;
 }
 
-.tool {
-  all: unset;
-  box-sizing: border-box;
-  position: relative;
-  min-width: 112px;
-  padding: 8px 12px;
+.keyhint {
   display: flex;
   align-items: center;
-  gap: 10px;
-  font: inherit;
-  font-size: 15px;
-  color: inherit;
-  border: 1px solid rgba(255, 190, 80, 0.25);
-  cursor: none;
+  gap: 7px;
 }
 
-.tool b {
+.keyhint svg {
+  filter: drop-shadow(0 0 4px rgba(255, 255, 255, 0.5));
+}
+
+.keyhint kbd {
   display: inline-block;
-  width: 22px;
-  height: 22px;
-  line-height: 22px;
+  min-width: 22px;
+  padding: 2px 6px;
+  font: inherit;
+  font-size: 9px;
   text-align: center;
   border: 1px solid currentColor;
-  font-size: 13px;
+  border-bottom-width: 2px;
+  border-radius: 3px;
 }
 
-.tool.active {
-  background: rgba(255, 170, 40, 0.18);
-  border-color: #ffbe55;
-  box-shadow: 0 0 14px rgba(255, 170, 40, 0.35) inset;
-}
-
-.tool:disabled {
-  opacity: 0.38;
-}
-
-.tool i {
-  position: absolute;
-  right: 6px;
-  top: 2px;
-  font-size: 9px;
-  font-style: normal;
-  opacity: 0.9;
+.keyhint kbd.space {
+  min-width: 54px;
 }
 
 .hud-help {
@@ -146,4 +177,290 @@ body,
   font-size: 12px;
   opacity: 0.6;
   white-space: nowrap;
+}
+
+/* ───── 우클릭 인벤토리 ───── */
+.inventory {
+  position: fixed;
+  z-index: 45;
+  padding: 12px;
+  font-family: Consolas, 'Courier New', monospace;
+  color: #f2f4f7;
+  text-shadow: 0 0 8px rgba(255, 255, 255, 0.55);
+  letter-spacing: 0.08em;
+  background: rgba(4, 4, 6, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  backdrop-filter: blur(6px);
+  box-shadow: 0 0 28px rgba(0, 0, 0, 0.6), 0 0 14px rgba(255, 255, 255, 0.12) inset;
+  transform-origin: 0 0;
+  animation: inv-open 140ms ease-out;
+}
+
+@keyframes inv-open {
+  from {
+    opacity: 0;
+    transform: scale(0.85);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.inv-title {
+  height: 22px;
+  font-size: 12px;
+  opacity: 0.75;
+}
+
+.inv-grid {
+  display: grid;
+}
+
+.slot {
+  position: relative;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  opacity: 0;
+  animation: slot-in 160ms ease-out forwards;
+}
+
+@keyframes slot-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.slot:not(.empty):hover {
+  border-color: #f2f4f7;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.slot.active {
+  border-color: #f2f4f7;
+  background: rgba(255, 255, 255, 0.2);
+  box-shadow: 0 0 14px rgba(255, 255, 255, 0.4) inset;
+}
+
+.slot.empty {
+  border-style: dashed;
+  border-color: rgba(255, 255, 255, 0.12);
+  background: transparent;
+}
+
+.slot img {
+  width: 80%;
+  height: 80%;
+  object-fit: contain;
+  pointer-events: none;
+}
+
+.slot .glyph {
+  font-size: 26px;
+  font-weight: bold;
+}
+
+.slot svg {
+  pointer-events: none;
+}
+
+.slot.locked img,
+.slot.locked svg,
+.slot.locked .glyph {
+  opacity: 0.3;
+  filter: grayscale(1);
+}
+
+.slot i {
+  position: absolute;
+  right: 3px;
+  bottom: 2px;
+  font-size: 9px;
+  font-style: normal;
+  opacity: 0.8;
+}
+
+.inv-tooltip {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% + 6px);
+  padding: 8px 12px;
+  background: rgba(4, 4, 6, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  pointer-events: none;
+}
+
+.inv-tooltip.above {
+  top: auto;
+  bottom: calc(100% + 6px);
+}
+
+.inv-tooltip b {
+  font-size: 14px;
+}
+
+.inv-tooltip p {
+  margin: 4px 0 0;
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  color: #b8bec6;
+  text-shadow: none;
+  line-height: 1.5;
+}
+
+.inv-tooltip em {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  font-style: normal;
+  opacity: 0.6;
+}
+
+/* ───── 무기 해금 알림 ───── */
+.hud-toast {
+  top: 22%;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 12px 26px;
+  background: rgba(4, 4, 6, 0.75);
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  box-shadow: 0 0 22px rgba(255, 255, 255, 0.18), 0 0 12px rgba(255, 255, 255, 0.12) inset;
+  animation: toast 2600ms ease-out forwards;
+}
+
+.hud-toast b {
+  font-size: 20px;
+  letter-spacing: 0.18em;
+}
+
+.hud-toast span {
+  font-size: 11px;
+  opacity: 0.7;
+}
+
+@keyframes toast {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -8px) scale(0.95);
+  }
+  8%,
+  80% {
+    opacity: 1;
+    transform: translate(-50%, 0) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, 0) scale(1);
+  }
+}
+
+/* ───── 탄약 (권총 / M4A1) ───── */
+.hud-ammo {
+  right: 28px;
+  bottom: 28px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  padding: 10px 14px;
+  background: rgba(4, 4, 6, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  backdrop-filter: blur(4px);
+}
+
+.ammo-count {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.ammo-count b {
+  font-size: 30px;
+  line-height: 1;
+}
+
+.ammo-count b.empty {
+  color: #ff5a4f;
+  text-shadow: 0 0 10px rgba(255, 60, 50, 0.7);
+}
+
+.ammo-count span {
+  font-size: 13px;
+  opacity: 0.6;
+}
+
+.ammo-pips {
+  display: flex;
+  gap: 3px;
+}
+
+.ammo-pips i {
+  width: 5px;
+  height: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  box-sizing: border-box;
+}
+
+.ammo-pips.dense {
+  gap: 2px;
+}
+
+.ammo-pips.dense i {
+  width: 3px;
+  height: 12px;
+}
+
+.ammo-pips i.on {
+  background: #f2f4f7;
+  box-shadow: 0 0 4px rgba(255, 255, 255, 0.6);
+}
+
+.ammo-reload {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  animation: blink 0.5s steps(2) infinite;
+}
+
+.ammo-reload .bar {
+  height: 3px;
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.ammo-reload .bar div {
+  height: 100%;
+  background: #f2f4f7;
+  transform-origin: 0 0;
+  animation: reload-fill linear forwards;
+}
+
+@keyframes reload-fill {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+@keyframes blink {
+  50% {
+    opacity: 0.55;
+  }
 }
